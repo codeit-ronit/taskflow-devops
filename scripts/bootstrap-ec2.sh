@@ -1,18 +1,18 @@
 #!/bin/bash
-# Idempotent EC2 bootstrap script - safe to run multiple times
+# Idempotent EC2 bootstrap script for Amazon Linux - safe to run multiple times
 set -e
 
-echo "=== TaskFlow EC2 Bootstrap ==="
+echo "=== TaskFlow EC2 Bootstrap (Amazon Linux) ==="
 
 # Update system packages
 echo "Updating system packages..."
-sudo apt-get update -y
+sudo yum update -y
 
 # Install Node.js if not present (using NodeSource)
 if ! command -v node &> /dev/null; then
   echo "Installing Node.js..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+  sudo yum install -y nodejs
 else
   echo "Node.js already installed: $(node --version)"
 fi
@@ -20,7 +20,7 @@ fi
 # Install Git if not present
 if ! command -v git &> /dev/null; then
   echo "Installing Git..."
-  sudo apt-get install -y git
+  sudo yum install -y git
 else
   echo "Git already installed: $(git --version)"
 fi
@@ -42,7 +42,7 @@ mkdir -p ~/taskflow
 # Setup swap if not already configured (helps on small instances)
 if ! swapon --show | grep -q '/swapfile'; then
   echo "Setting up swap space..."
-  sudo fallocate -l 1G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=1024
+  sudo dd if=/dev/zero of=/swapfile bs=1M count=1024
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
   sudo swapon /swapfile

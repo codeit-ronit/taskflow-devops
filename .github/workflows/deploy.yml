@@ -21,8 +21,8 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Install git if not present (idempotent)
-            which git || sudo apt-get update && sudo apt-get install -y git
+            # Install git if not present (Amazon Linux uses yum/dnf)
+            which git || sudo yum install -y git
 
             # Clone repo if not exists, otherwise pull latest
             if [ ! -d ~/taskflow ]; then
