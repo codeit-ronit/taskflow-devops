@@ -1,0 +1,43 @@
+{
+  "_documentation": {
+    "description": "IAM Information for AWS Academy Lab Environment",
+    "note": "AWS Academy does NOT allow creating IAM roles/policies. We use the pre-existing LabRole for everything.",
+    "lab_role": "arn:aws:iam::ACCOUNT_ID:role/LabRole",
+    "important": "The LabRole is automatically created by AWS Academy and has sufficient permissions for ECS, ECR, S3, CloudWatch, VPC, and ALB operations."
+  },
+
+  "aws_academy_labrole_info": {
+    "role_name": "LabRole",
+    "arn_pattern": "arn:aws:iam::<ACCOUNT_ID>:role/LabRole",
+    "used_by": [
+      "ECS Task Execution Role (pulls images from ECR, writes CloudWatch logs)",
+      "ECS Task Role (permissions available to the running container)"
+    ],
+    "pre_attached_policies": [
+      "Broad permissions for lab exercises (EC2, ECS, ECR, S3, DynamoDB, CloudWatch, VPC, ELB, etc.)",
+      "Cannot create/modify/delete IAM resources",
+      "Cannot access AWS Organizations or Billing"
+    ]
+  },
+
+  "github_secrets_required": {
+    "AWS_ACCESS_KEY_ID": "From AWS Academy Lab → AWS Details → AWS CLI credentials",
+    "AWS_SECRET_ACCESS_KEY": "From AWS Academy Lab → AWS Details → AWS CLI credentials",
+    "AWS_SESSION_TOKEN": "From AWS Academy Lab → AWS Details → AWS CLI credentials (REQUIRED for Academy)",
+    "AWS_REGION": "us-east-1 (default Academy region)"
+  },
+
+  "why_no_iam_creation": {
+    "reason": "AWS Academy restricts IAM operations. Students cannot create roles or policies.",
+    "solution": "Use the pre-existing LabRole ARN that AWS Academy provides automatically.",
+    "terraform_usage": "execution_role_arn = arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/LabRole"
+  },
+
+  "important_academy_notes": [
+    "Session tokens expire every ~4 hours — update GitHub Secrets when restarting lab",
+    "LabRole has broad permissions but CANNOT modify IAM",
+    "All resources are deleted when the lab session ends",
+    "Always use us-east-1 region unless specified otherwise",
+    "Budget limits apply — keep desired_count at 1"
+  ]
+}

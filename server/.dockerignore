@@ -1,0 +1,15 @@
+# Server .dockerignore — used when building server/Dockerfile standalone
+node_modules
+npm-debug.log*
+.env
+.env.*
+*.db
+*.db-journal
+prisma/*.db
+tests/
+.eslintrc*
+.prettierrc
+.git
+.gitignore
+coverage/
+README.md

@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const taskRoutes = require('./routes/tasks');
 const errorHandler = require('./middleware/errorHandler');
@@ -21,6 +22,16 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api/tasks', taskRoutes);
+
+// Serve React frontend static files in production
+const clientBuildPath = path.join(__dirname, '..', 'public');
+app.use(express.static(clientBuildPath));
+
+// SPA fallback: any non-API route serves index.html (React handles routing)
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+  res.sendFile(path.join(clientBuildPath, 'index.html'));
+});
 
 app.use(errorHandler);
 

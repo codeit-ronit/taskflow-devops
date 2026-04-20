@@ -1,0 +1,13 @@
+# Client .dockerignore — used when building client/Dockerfile standalone
+node_modules
+dist
+coverage
+test-results
+playwright-report
+e2e/
+tests/
+.eslintrc*
+.prettierrc
+.git
+.gitignore
+*.md

@@ -1,0 +1,50 @@
+# Root .dockerignore — used by the combined Dockerfile at project root
+# Excludes everything not needed for the production image
+
+# Dependencies (rebuilt inside container)
+**/node_modules
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+*.pdf
+PIPELINE_GUIDE.md
+EC2_DEPLOYMENT.md
+implementation_plan.md
+
+# Infrastructure (not needed in container)
+terraform/
+ecs/
+iam/
+scripts/
+.github/
+
+# Environment and secrets
+**/.env
+**/.env.*
+
+# Database files (initialized fresh in container)
+**/*.db
+**/*.db-journal
+
+# Test files (not needed in production)
+server/tests/
+client/tests/
+client/e2e/
+**/coverage/
+**/test-results/
+**/playwright-report/
+
+# Build artifacts
+client/dist/
+
+# Docker files (prevent recursive context)
+docker-compose.yml
+Dockerfile
+
+# Misc
+.DS_Store
+render.yaml

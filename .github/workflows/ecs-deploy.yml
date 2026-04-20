@@ -1,0 +1,326 @@
+# =============================================================================
+# COMPLETE CI/CD PIPELINE — GitHub Actions → Terraform → Docker → ECS Fargate
+# =============================================================================
+# This workflow executes in 4 phases:
+#   1. TEST      — Run unit & integration tests; fail fast on broken code
+#   2. TERRAFORM — Create/update AWS infrastructure (VPC, ECS, ECR, ALB)
+#   3. DOCKER    — Build image and push to ECR
+#   4. DEPLOY    — Update ECS service with new image, verify health
+#
+# Triggers: push to main, pull requests to main
+# =============================================================================
+
+name: ECS Fargate CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Environment variables available to ALL jobs
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: taskflow-server
+  ECS_CLUSTER: taskflow-cluster
+  ECS_SERVICE: taskflow-service
+  CONTAINER_NAME: taskflow-container
+
+jobs:
+  # ===========================================================================
+  # PHASE 1: TESTING
+  # ===========================================================================
+  # Runs all tests. If ANY test fails, the entire pipeline stops.
+  # This ensures broken code never gets deployed.
+  # ===========================================================================
+  test:
+    name: "Phase 1 - Run Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # --- Cache node_modules for faster builds ---
+      - name: Cache server node_modules
+        uses: actions/cache@v4
+        with:
+          path: server/node_modules
+          key: server-deps-${{ hashFiles('server/package-lock.json') }}
+          restore-keys: server-deps-
+
+      - name: Cache client node_modules
+        uses: actions/cache@v4
+        with:
+          path: client/node_modules
+          key: client-deps-${{ hashFiles('client/package-lock.json') }}
+          restore-keys: client-deps-
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # --- Server Tests ---
+      - name: Install server dependencies
+        working-directory: ./server
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: ./server
+        run: npx prisma generate
+
+      - name: Run server linting
+        working-directory: ./server
+        run: npm run lint
+
+      - name: Push database schema (test DB)
+        working-directory: ./server
+        run: npx prisma db push
+        env:
+          DATABASE_URL: "file:./test.db"
+
+      - name: Run server unit tests
+        working-directory: ./server
+        run: npm run test:unit
+        env:
+          DATABASE_URL: "file:./test.db"
+
+      - name: Run server integration tests
+        working-directory: ./server
+        run: npm run test:integration
+        env:
+          DATABASE_URL: "file:./test.db"
+
+      # --- Client Tests ---
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+
+      - name: Run client linting
+        working-directory: ./client
+        run: npm run lint
+
+      - name: Run client unit tests
+        working-directory: ./client
+        run: npm test
+
+      # --- Test Report ---
+      - name: Generate test summary
+        if: always()
+        run: |
+          echo "## Test Results Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Server Unit Tests | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Server Integration Tests | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Client Unit Tests | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # PHASE 2: TERRAFORM — Infrastructure as Code
+  # ===========================================================================
+  # Creates/updates AWS infrastructure. Uses S3 remote backend so it
+  # remembers what was already created (no duplicate resources).
+  # Only runs on push to main (not on PRs — we don't want PRs changing infra).
+  # ===========================================================================
+  terraform:
+    name: "Phase 2 - Terraform Apply"
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    defaults:
+      run:
+        working-directory: ./terraform
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          TF_LOG: INFO
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan -no-color
+        continue-on-error: false
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output infrastructure details
+        run: |
+          echo "## Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          terraform output >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # PHASE 3: DOCKER BUILD & PUSH TO ECR
+  # ===========================================================================
+  # Builds the production Docker image and pushes it to AWS ECR.
+  # Tags: latest + git SHA (for rollback capability)
+  # ===========================================================================
+  docker-build-push:
+    name: "Phase 3 - Docker Build & Push"
+    runs-on: ubuntu-latest
+    needs: terraform
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Docker image (frontend + backend combined)..."
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            .
+
+          echo "Pushing image to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+          echo "## Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "- Registry: $ECR_REGISTRY" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: $ECR_REPOSITORY" >> $GITHUB_STEP_SUMMARY
+          echo "- Tags: latest, $IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # PHASE 4: DEPLOY TO ECS FARGATE
+  # ===========================================================================
+  # Updates the ECS service to use the new image.
+  # ECS performs a rolling deployment (no downtime).
+  # Waits for the service to become stable (all tasks healthy).
+  # ===========================================================================
+  deploy-ecs:
+    name: "Phase 4 - Deploy to ECS Fargate"
+    runs-on: ubuntu-latest
+    needs: docker-build-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition taskflow-task \
+            --query 'taskDefinition' \
+            --output json > task-def.json
+
+      - name: Update image in task definition
+        id: update-task-def
+        run: |
+          # Get ECR registry URL
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_IMAGE="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}"
+
+          # Update the image in the task definition
+          cat task-def.json | \
+            jq --arg IMAGE "$ECR_IMAGE" \
+            '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > new-task-def.json
+
+          echo "Updated image to: $ECR_IMAGE"
+
+      - name: Register new task definition
+        id: register-task-def
+        run: |
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
+          echo "Registered new task definition: $NEW_TASK_DEF_ARN"
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition ${{ steps.register-task-def.outputs.task_def_arn }} \
+            --force-new-deployment \
+            --query 'service.serviceName' \
+            --output text
+
+          echo "Deployment initiated. Waiting for service to stabilize..."
+
+      - name: Wait for service stability
+        run: |
+          echo "Waiting for ECS service to become stable (this may take 2-5 minutes)..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE
+
+          echo "Service is stable and healthy!"
+
+      - name: Verify deployment and output URL
+        run: |
+          # Get ALB DNS name
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names taskflow-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text 2>/dev/null || echo "ALB not found")
+
+          # Get running task count
+          RUNNING=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query 'services[0].runningCount' \
+            --output text)
+
+          echo "## Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Application URL | http://$ALB_DNS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Check | http://$ALB_DNS/api/health |" >> $GITHUB_STEP_SUMMARY
+          echo "| Running Tasks | $RUNNING |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verify with:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "curl http://$ALB_DNS/api/health" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
