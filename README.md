@@ -279,7 +279,7 @@ All infrastructure is defined in `terraform/` and managed as code:
 
 ---
 
-## Testing
+## Testingg
 
 ```bash
 # Server unit tests
